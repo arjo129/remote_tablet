@@ -9,11 +9,17 @@ use gdk_pixbuf::Colorspace;
 use image::{Rgb, ImageOutputFormat, DynamicImage};
 use qrcode::QrCode;
 use gtk::{Application, ApplicationWindow, Button, Image};
-use ifaces::*;
+use ifaces::Interface;
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::net::SocketAddr;
+use std::thread;
+use tiny_http::{Server, Response};
+use websocket::sync::Server as WsServer;
+use websocket::OwnedMessage;
+use serde_json::Value;
+use enigo::*;
 
 #[derive(Debug, Copy, Clone)]
 enum IfaceError {
@@ -55,7 +61,7 @@ fn get_wireless_interface()->Result<Vec<String>, IfaceError> {
 
 fn get_ip_address_given_iface_name(iface_name: String) -> Option<SocketAddr>{
     let mut res: Option<SocketAddr> = None;
-    for iface in ifaces::Interface::get_all().unwrap().into_iter() {
+    for iface in Interface::get_all().unwrap().into_iter() {
         if iface.name == iface_name {
             if let Some(SocketAddr::V4(ipaddr)) = iface.addr {res = iface.addr;}
         }
@@ -82,11 +88,87 @@ fn get_ip() ->  Result<String, IfaceError> {
     }
 }
 
+struct MousePosition {
+    x: f64,
+    y: f64
+}
+
+fn deseriallize_data(data: OwnedMessage) -> Option<MousePosition> {
+    
+    if let OwnedMessage::Text(payload) = data {
+        if let Ok(z)  = serde_json::from_str(&payload) {
+            let v:Value = z;
+            println!("{} {} {}", v["x"], v["y"], v["force"]);
+            let x = v["x"].as_f64();
+            let y = v["y"].as_f64();
+            if let (Some(x), Some(y)) = (x,  y) {
+                return Some(MousePosition{ x:x, y:y});    
+            } 
+        }
+        else {
+            println!("Client sent wierd data");
+        }
+    }
+    None        
+}
+
+fn run_websocket_server() {
+    let server = WsServer::bind("0.0.0.0:2794").expect("Could not open websocket");
+    let mut enigo = Enigo::new();
+    thread::spawn(move || {
+        println!("running web sockets");
+        for request in server.filter_map(Result::ok) {
+            if !request.protocols().contains(&"rust-websocket".to_string()) {
+                println!("Rejected client");
+				request.reject().unwrap();
+				return;
+			}
+
+			let mut client = request.use_protocol("rust-websocket").accept().unwrap();
+
+            let ip = client.peer_addr().unwrap();
+            println!("Connection from {}", ip);
+
+            let (mut receiver, mut sender) = client.split().unwrap();
+            
+            for message in receiver.incoming_messages() {
+                match message {
+                    Ok(x)=> {
+                        if let Some(mouse_position) = deseriallize_data(x){
+                            enigo.mouse_move_to(mouse_position.x as i32, mouse_position.y as i32);
+                        }
+                    },
+                    Err(e)=> break
+                }
+
+            }
+        }
+    });
+}
+
+fn run_http_server() {
+    let http_file: Vec<u8> = include_bytes!("../html/index.html").iter().cloned().collect();
+    let server = Server::http("0.0.0.0:8007").expect("Failed to start HTTP Server");
+    thread::spawn(move || {
+        loop {
+            let request = match server.recv() {
+                Ok(rq) => rq,
+                Err(e) => { println!("error: {}", e); continue }
+            };
+            let resp = Response::from_data(http_file.clone());
+            request.respond(resp);
+        }
+    });
+}
+
 fn main() {
     let application = Application::new(
         Some("com.github.arjo129.remote.tablet"),
         Default::default(),
     ).expect("failed to initialize GTK application");
+
+    run_http_server();
+    run_websocket_server();
 
     application.connect_activate(|app| {
         let window = ApplicationWindow::new(app);
@@ -120,9 +202,6 @@ fn main() {
                 println!("Error generating QR code")
             }
         }
-        
-        
-        
     });
 
 
