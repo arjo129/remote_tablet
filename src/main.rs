@@ -9,17 +9,24 @@ use gdk_pixbuf::Colorspace;
 use image::{Rgb, ImageOutputFormat, DynamicImage};
 use qrcode::QrCode;
 use gtk::{Application, ApplicationWindow, Button, Image};
+
 use ifaces::Interface;
+
+use tiny_http::{Server, Response};
+
+use websocket::sync::Server as WsServer;
+use websocket::OwnedMessage;
+
+use serde_json::Value;
+
+use enigo::*;
+
+use std::time::{Duration, SystemTime};
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::net::SocketAddr;
 use std::thread;
-use tiny_http::{Server, Response};
-use websocket::sync::Server as WsServer;
-use websocket::OwnedMessage;
-use serde_json::Value;
-use enigo::*;
 
 #[derive(Debug, Copy, Clone)]
 enum IfaceError {
@@ -90,31 +97,59 @@ fn get_ip() ->  Result<String, IfaceError> {
 
 struct MousePosition {
     x: f64,
-    y: f64
+    y: f64,
+    stylus: bool
 }
 
-fn deseriallize_data(data: OwnedMessage) -> Option<MousePosition> {
+enum MouseEvent {
+    MouseMove(MousePosition),
+    MouseRelease
+}
+
+fn deseriallize_data(data: OwnedMessage) -> Option<MouseEvent> {
     
     if let OwnedMessage::Text(payload) = data {
         if let Ok(z)  = serde_json::from_str(&payload) {
             let v:Value = z;
-            println!("{} {} {}", v["x"], v["y"], v["force"]);
+            if let Some(event_type) =  v["type"].as_str() {
+                if event_type == "end" {
+                    return Some(MouseEvent::MouseRelease);
+                }
+            }
+            else {
+                return None;
+            }
+            println!("{} {} {} {}", v["x"], v["y"], v["force"], v["touch_type"]);
             let x = v["x"].as_f64();
             let y = v["y"].as_f64();
-            if let (Some(x), Some(y)) = (x,  y) {
-                return Some(MousePosition{ x:x, y:y});    
+            let touch_type = v["touch_type"].as_str();
+            if let (Some(x), Some(y), Some(touch_type)) = (x,  y, touch_type) {
+                return Some(MouseEvent::MouseMove(MousePosition{ x:x, y:y, stylus: touch_type == "stylus"}));    
             } 
         }
         else {
-            println!("Client sent wierd data");
+            println!("Client sent weird data");
         }
     }
     None        
 }
 
+fn handle_event(enigo: &mut Enigo, mouse_position: MouseEvent) {
+    match mouse_position {
+        MouseEvent::MouseMove(mouse_position) => {
+            enigo.mouse_move_to(mouse_position.x as i32, mouse_position.y as i32);
+            enigo.mouse_down(MouseButton::Left);
+        },
+
+        MouseEvent::MouseRelease => {
+            enigo.mouse_up(MouseButton::Left);
+        }
+    }   
+}
 fn run_websocket_server() {
     let server = WsServer::bind("0.0.0.0:2794").expect("Could not open websocket");
     let mut enigo = Enigo::new();
+    let mut last_time = SystemTime::now();
     thread::spawn(move || {
         println!("running web sockets");
         for request in server.filter_map(Result::ok) {
@@ -135,7 +170,7 @@ fn run_websocket_server() {
                 match message {
                     Ok(x)=> {
                         if let Some(mouse_position) = deseriallize_data(x){
-                            enigo.mouse_move_to(mouse_position.x as i32, mouse_position.y as i32);
+                            handle_event(&mut enigo, mouse_position);
                         }
                     },
                     Err(e)=> break
