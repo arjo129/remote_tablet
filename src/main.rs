@@ -15,9 +15,10 @@ use ifaces::Interface;
 use tiny_http::{Server, Response};
 
 use websocket::sync::Server as WsServer;
-use websocket::OwnedMessage;
+use websocket::{OwnedMessage, Message};
 
 use serde_json::Value;
+use serde_derive::{Deserialize, Serialize};
 
 use enigo::*;
 
@@ -133,7 +134,11 @@ fn deseriallize_data(data: OwnedMessage) -> Option<MouseEvent> {
     }
     None        
 }
-
+#[derive(Serialize, Deserialize, Debug)]
+struct ScreenSize {
+    width: i32,
+    height: i32   
+}
 fn handle_event(enigo: &mut Enigo, mouse_position: MouseEvent) {
     match mouse_position {
         MouseEvent::MouseMove(mouse_position) => {
@@ -146,25 +151,30 @@ fn handle_event(enigo: &mut Enigo, mouse_position: MouseEvent) {
         }
     }   
 }
-fn run_websocket_server() {
+
+fn run_websocket_server(screen_size: ScreenSize) {
     let server = WsServer::bind("0.0.0.0:2794").expect("Could not open websocket");
     let mut enigo = Enigo::new();
     let mut last_time = SystemTime::now();
     thread::spawn(move || {
         println!("running web sockets");
         for request in server.filter_map(Result::ok) {
-            if !request.protocols().contains(&"rust-websocket".to_string()) {
+            if !request.protocols().contains(&"remote_stylus".to_string()) {
                 println!("Rejected client");
 				request.reject().unwrap();
 				return;
 			}
 
-			let mut client = request.use_protocol("rust-websocket").accept().unwrap();
+			let mut client = request.use_protocol("remote_stylus").accept().unwrap();
 
             let ip = client.peer_addr().unwrap();
             println!("Connection from {}", ip);
 
             let (mut receiver, mut sender) = client.split().unwrap();
+
+            let json = serde_json::to_string(&screen_size).expect("failed to serialize screensize");
+            let message = Message::text(json);
+            sender.send_message(&message);
             
             for message in receiver.incoming_messages() {
                 match message {
@@ -203,12 +213,16 @@ fn main() {
     ).expect("failed to initialize GTK application");
 
     run_http_server();
-    run_websocket_server();
+    
 
     application.connect_activate(|app| {
         let window = ApplicationWindow::new(app);
         window.set_title("Remote Tablet Program");
         window.set_default_size(350, 350);
+        let display = window.get_display();
+        let screen = display.unwrap().get_default_screen();
+        let screen_size = ScreenSize{width: screen.get_width(), height: screen.get_height() };
+        run_websocket_server(screen_size);
         let ip = get_ip();
         match ip.clone() {
             Ok(_) =>{}
@@ -238,7 +252,5 @@ fn main() {
             }
         }
     });
-
-
     application.run(&[]);
 }
