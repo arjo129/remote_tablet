@@ -39,21 +39,32 @@
                 var canvas = document.getElementById('draw');
                 canvas.width = window.innerWidth;
                 canvas.height = window.innerHeight; 
+                var canvas_context = canvas.getContext("2d");
 
                 var offsetX = 0;
                 var offsetY = 0;
                 var viewpane = document.getElementById('viewpane');
 
+               
                 function setupViewPane(data){
                     viewpane.width = data.width*100/data.height;
                     var context = viewpane.getContext("2d");
                     context.beginPath();
-                    let w = viewpane.width*window.innerWidth/data.width;
-                    let h = viewpane.height*window.innerHeight/data.height;
-                    context.rect(0, 0, w, h);
+                    var screenWidth = viewpane.width*window.innerWidth/data.width;
+                    var screenHeight = viewpane.height*window.innerHeight/data.height;
+                    context.rect(0, 0, screenWidth, screenHeight);
                     context.stroke();
+
+                    viewpane.ontouchstart = function(evt) {
+
+                    }
+
+                    viewpane.ontouchmove = function(evt) {
+                        
+                    }
                 }
                 
+                var prev_point;
                 function eventToJson (evt) {
                     let res = {
                         "type": "touch",
@@ -67,13 +78,24 @@
                     return JSON.stringify(res);
                 }
 
-                canvas.ontouchstart = function (evt) {                    
+                canvas.ontouchstart = function (evt) {
+                    prev_point = {"x": evt.touches[0].clientX, "y": evt.touches[0].clientY};                    
                     socket.send(eventToJson(evt));
                 }
                 canvas.ontouchmove = function (evt) {
+                    canvas_context.beginPath();
+                    canvas_context.moveTo(prev_point["x"], prev_point["y"]);
+                    prev_point = {"x": evt.touches[0].clientX, "y": evt.touches[0].clientY};  
+                    canvas_context.lineTo(prev_point["x"], prev_point["y"]);
+                    canvas_context.stroke();
                     socket.send(eventToJson(evt));
                 }
                 canvas.ontouchend = function(evt) {
+                    canvas_context.beginPath();
+                    canvas_context.moveTo(prev_point["x"], prev_point["y"]);
+                    prev_point = {"x": evt.touches[0].clientX, "y": evt.touches[0].clientY};  
+                    canvas_context.lineTo(prev_point["x"], prev_point["y"]);
+                    canvas_context.stroke();
                     socket.send(JSON.stringify({"type": "end"}))
                 }
                 
